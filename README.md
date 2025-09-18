@@ -36,7 +36,11 @@
 
 ### 🚨 News
 
+
+- `2025-9-18` NiT is accepted by NeurIPS 2025! 🍺
+
 - `2025-6-3` We are delighted to introduce NiT, which is the first work to explicitly model native resolution image synthesis. We have released the code, pretrained models, and processed dataset of NiT.
+
 
 
 ### 1. Setup
