@@ -103,8 +103,10 @@ class NiTPipeline(DiffusionPipeline):
     def _decode_latents(self, latents: torch.Tensor) -> torch.Tensor:
         if self.vae is None:
             return latents
-        vae_params = next(self.vae.parameters(), None)
-        vae_dtype = vae_params.dtype if vae_params is not None else latents.dtype
+        vae_dtype = getattr(self.vae, "dtype", None)
+        if vae_dtype is None:
+            vae_params = next(self.vae.parameters(), None)
+            vae_dtype = vae_params.dtype if vae_params is not None else latents.dtype
         latents = latents.to(dtype=vae_dtype)
         scaling_factor = getattr(self.vae.config, "scaling_factor", 1.0)
         latents = latents / scaling_factor

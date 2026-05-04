@@ -119,8 +119,8 @@ class NiTFlowMatchScheduler(SchedulerMixin, ConfigMixin):
 
     @staticmethod
     def _promote_dtypes(*tensors: torch.Tensor) -> torch.dtype:
-        dtype = tensors[0].dtype
-        for tensor in tensors[1:]:
+        dtype = torch.get_default_dtype()
+        for tensor in tensors:
             dtype = torch.promote_types(dtype, tensor.dtype)
         return dtype
 
