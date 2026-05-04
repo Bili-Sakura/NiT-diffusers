@@ -1,4 +1,4 @@
-<h1 align="center"> Native-Resolution Image Synthesis</h1>
+<h1 align="center"> Native-Resolution Image Synthesis for Diffusers</h1>
 
 <!-- 
 [![PWC](https://img.shields.io/endpoint.svg?url=https://paperswithcode.com/badge/representation-alignment-for-generation/image-generation-on-imagenet-256x256)](https://paperswithcode.com/sota/image-generation-on-imagenet-256x256?p=representation-alignment-for-generation) -->
@@ -42,6 +42,42 @@
 - `2025-6-3` We are delighted to introduce NiT, which is the first work to explicitly model native resolution image synthesis. We have released the code, pretrained models, and processed dataset of NiT.
 
 
+
+### Diffusers-style implementation
+
+This repository has been refactored into a Diffusers-compatible package layout.
+The core NiT components now live under `src/diffusers` and can be copied into
+the upstream `huggingface/diffusers` repository:
+
+- `src/diffusers/models/transformers/transformer_nit.py`
+- `src/diffusers/schedulers/scheduling_flow_match_nit.py`
+- `src/diffusers/pipelines/nit/pipeline_nit.py`
+
+Original NiT checkpoints can be converted with:
+
+```bash
+python scripts/convert_nit_to_diffusers.py \
+  --checkpoint checkpoints/nit_xl_model_1000K.safetensors \
+  --output nit-xl-1000k-diffusers \
+  --model-size nit-xl
+```
+
+Sample with:
+
+```bash
+python scripts/sample_nit.py \
+  --model nit-xl-1000k-diffusers \
+  --class-label 207 \
+  --height 512 \
+  --width 512 \
+  --mode sde \
+  --num-inference-steps 250 \
+  --guidance-scale 2.05 \
+  --guidance-low 0.0 \
+  --guidance-high 0.7
+```
+
+See `README_DIFFUSERS.md` for conversion and package details.
 
 ### 1. Setup
 
