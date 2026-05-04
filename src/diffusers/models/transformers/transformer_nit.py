@@ -98,10 +98,10 @@ class NiTTimestepEmbedder(nn.Module):
     @staticmethod
     def get_timestep_embedding(timesteps: torch.Tensor, embedding_dim: int, max_period: int = 10000):
         half = embedding_dim // 2
-        embedding_dtype = _get_float_dtype_or_default(timesteps)
-        exponent = -math.log(max_period) * torch.arange(half, dtype=embedding_dtype, device=timesteps.device) / half
+        # Keep sinusoid construction in fp32 to mirror native NiT behavior.
+        exponent = -math.log(max_period) * torch.arange(half, dtype=torch.float32, device=timesteps.device) / half
         freqs = torch.exp(exponent)
-        args = timesteps.to(dtype=embedding_dtype)[:, None] * freqs[None]
+        args = timesteps.float()[:, None] * freqs[None]
         embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
         if embedding_dim % 2:
             embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
@@ -130,6 +130,7 @@ class NiTRotaryEmbedding(nn.Module):
         head_dim: int,
         custom_freqs: str = "normal",
         theta: int = 10000,
+        max_cached_len: int = 1024,
         max_pe_len_h: Optional[int] = None,
         max_pe_len_w: Optional[int] = None,
         decouple: bool = False,
@@ -150,21 +151,24 @@ class NiTRotaryEmbedding(nn.Module):
         freqs = 1.0 / (theta ** (torch.arange(0, dim, 2, dtype=default_dtype) / dim))
         self.register_buffer("freqs_h", freqs, persistent=False)
         self.register_buffer("freqs_w", freqs.clone(), persistent=False)
+        positions = torch.arange(max_cached_len, dtype=default_dtype)
+        freqs_h_cached = torch.einsum("n,f->nf", positions, self.freqs_h).repeat_interleave(2, dim=-1)
+        freqs_w_cached = torch.einsum("n,f->nf", positions, self.freqs_w).repeat_interleave(2, dim=-1)
+        self.register_buffer("freqs_h_cached", freqs_h_cached, persistent=False)
+        self.register_buffer("freqs_w_cached", freqs_w_cached, persistent=False)
 
     def forward(self, image_sizes: torch.LongTensor, device: torch.device) -> Tuple[torch.Tensor, torch.Tensor]:
         grids = []
         for height, width in image_sizes.tolist():
-            grid_h, grid_w = torch.meshgrid(
-                torch.arange(height, device=device),
-                torch.arange(width, device=device),
-                indexing="ij",
-            )
-            grids.append(torch.stack([grid_h.flatten(), grid_w.flatten()], dim=0))
+            # Match native NiT token ordering for RoPE alignment.
+            grid_h = torch.arange(height, device=device)
+            grid_w = torch.arange(width, device=device)
+            grid = torch.meshgrid(grid_h, grid_w, indexing="xy")
+            grids.append(torch.stack(grid, dim=0).reshape(2, -1))
         grid = torch.cat(grids, dim=1)
-        freqs_dtype = self.freqs_h.dtype
-        freqs_h = torch.einsum("n,f->nf", grid[0].to(dtype=freqs_dtype), self.freqs_h.to(device))
-        freqs_w = torch.einsum("n,f->nf", grid[1].to(dtype=freqs_dtype), self.freqs_w.to(device))
-        freqs = torch.cat([freqs_h.repeat_interleave(2, dim=-1), freqs_w.repeat_interleave(2, dim=-1)], dim=-1)
+        freqs_h = self.freqs_h_cached.to(device)[grid[0]]
+        freqs_w = self.freqs_w_cached.to(device)[grid[1]]
+        freqs = torch.cat([freqs_h, freqs_w], dim=-1)
         return freqs.cos().unsqueeze(1), freqs.sin().unsqueeze(1)
 
 
@@ -190,10 +194,13 @@ class NiTAttention(nn.Module):
     ) -> torch.Tensor:
         qkv = self.qkv(hidden_states).reshape(hidden_states.shape[0], 3, self.num_heads, self.head_dim)
         query, key, value = qkv.unbind(dim=1)
+        original_dtype = qkv.dtype
         query = self.q_norm(query)
         key = self.k_norm(key)
         query = query * freqs_cos + _rotate_half(query) * freqs_sin
         key = key * freqs_cos + _rotate_half(key) * freqs_sin
+        query = query.to(dtype=original_dtype)
+        key = key.to(dtype=original_dtype)
 
         if flash_attn_varlen_func is not None and query.is_cuda:
             max_seqlen = (cu_seqlens[1:] - cu_seqlens[:-1]).max().item()
@@ -428,8 +435,6 @@ class NiTTransformer2DModel(ModelMixin, ConfigMixin):
 
         hidden_states = self.x_embedder(hidden_states).squeeze(1)
         freqs_cos, freqs_sin = self.rope(image_sizes, hidden_states.device)
-        freqs_cos = freqs_cos.to(dtype=hidden_states.dtype)
-        freqs_sin = freqs_sin.to(dtype=hidden_states.dtype)
 
         seqlens = image_sizes[:, 0] * image_sizes[:, 1]
         cu_seqlens = torch.cat(

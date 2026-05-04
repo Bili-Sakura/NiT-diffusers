@@ -59,8 +59,8 @@ class NiTFlowMatchScheduler(SchedulerMixin, ConfigMixin):
         self.mode = mode
         self.path_type = path_type
         self.num_train_timesteps = num_train_timesteps
-        default_dtype = torch.get_default_dtype()
-        self.timesteps = torch.from_numpy(np.linspace(1.0, 0.0, num_train_timesteps + 1)).to(dtype=default_dtype)
+        # Native NiT integrates in float64 for better numerical stability.
+        self.timesteps = torch.from_numpy(np.linspace(1.0, 0.0, num_train_timesteps + 1)).to(dtype=torch.float64)
 
     def set_timesteps(
         self,
@@ -135,9 +135,8 @@ class NiTFlowMatchScheduler(SchedulerMixin, ConfigMixin):
         generator: Optional[torch.Generator] = None,
         return_dict: bool = True,
     ) -> NiTFlowMatchSchedulerOutput:
-        del generator
         sample_dtype = sample.dtype
-        compute_dtype = self._promote_dtypes(sample, model_output, timestep, next_timestep)
+        compute_dtype = torch.float64
         sample = sample.to(dtype=compute_dtype)
         model_output = model_output.to(dtype=compute_dtype)
         timestep = timestep.to(device=sample.device, dtype=compute_dtype).flatten()
@@ -156,7 +155,10 @@ class NiTFlowMatchScheduler(SchedulerMixin, ConfigMixin):
             if torch.allclose(next_timestep[0], torch.zeros_like(next_timestep[0])):
                 prev_sample = sample + drift * dt
             else:
-                noise = torch.randn_like(sample)
+                if generator is not None:
+                    noise = torch.randn(sample.shape, generator=generator, device=sample.device, dtype=sample.dtype)
+                else:
+                    noise = torch.randn_like(sample)
                 prev_sample = sample + drift * dt + torch.sqrt(diffusion) * noise * torch.sqrt(torch.abs(dt))
 
         prev_sample = prev_sample.to(sample_dtype)
@@ -176,7 +178,7 @@ class NiTFlowMatchScheduler(SchedulerMixin, ConfigMixin):
         if self.mode != "ode":
             raise ValueError("Heun correction is only defined for ODE sampling.")
         sample_dtype = sample.dtype
-        compute_dtype = self._promote_dtypes(sample, model_output, next_model_output, timestep, next_timestep)
+        compute_dtype = torch.float64
         sample = sample.to(dtype=compute_dtype)
         model_output = model_output.to(dtype=compute_dtype)
         next_model_output = next_model_output.to(dtype=compute_dtype)

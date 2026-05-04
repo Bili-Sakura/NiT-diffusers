@@ -78,16 +78,23 @@ class NiTPipeline(DiffusionPipeline):
 
         latent_height = height // spatial_downsample
         latent_width = width // spatial_downsample
-        latent_shape = (batch_size, self.transformer.config.in_channels, latent_height, latent_width)
-        latents = torch.randn(latent_shape, generator=generator, device=device, dtype=dtype)
+        patch_size = int(self.transformer.config.patch_size)
+        if latent_height % patch_size != 0 or latent_width % patch_size != 0:
+            raise ValueError("Latent height and width must be divisible by transformer's patch_size.")
 
-        image_sizes = torch.tensor(
-            [[latent_height // self.transformer.config.patch_size, latent_width // self.transformer.config.patch_size]]
-            * batch_size,
-            device=device,
-            dtype=torch.long,
+        token_height = latent_height // patch_size
+        token_width = latent_width // patch_size
+        image_sizes = torch.tensor([[token_height, token_width]] * batch_size, device=device, dtype=torch.long)
+
+        # Match native NiT sampler initialization exactly: sample directly in packed-token space.
+        packed_shape = (
+            batch_size * token_height * token_width,
+            self.transformer.config.in_channels,
+            patch_size,
+            patch_size,
         )
-        return latents, image_sizes
+        packed_latents = torch.randn(packed_shape, generator=generator, device=device, dtype=dtype)
+        return packed_latents, image_sizes
 
     def _apply_classifier_free_guidance(
         self,
@@ -137,7 +144,7 @@ class NiTPipeline(DiffusionPipeline):
         return_dict: bool = True,
     ) -> Union[NiTPipelineOutput, Tuple]:
         device = self._execution_device
-        dtype = next(self.transformer.parameters()).dtype
+        model_dtype = next(self.transformer.parameters()).dtype
 
         if isinstance(class_labels, int):
             class_labels = [class_labels]
@@ -147,7 +154,7 @@ class NiTPipeline(DiffusionPipeline):
             class_labels = class_labels.to(device=device, dtype=torch.long)
         batch_size = class_labels.numel()
 
-        latents, image_sizes = self._prepare_latents(batch_size, height, width, dtype, device, generator)
+        packed_latents, image_sizes = self._prepare_latents(batch_size, height, width, model_dtype, device, generator)
         timesteps = self.scheduler.set_timesteps(num_inference_steps, device=device, mode=mode)
 
         null_labels = torch.full_like(class_labels, self.transformer.config.num_classes)
@@ -155,22 +162,28 @@ class NiTPipeline(DiffusionPipeline):
             next_timestep = timesteps[index + 1]
             guidance_active = guidance_interval[0] <= float(timestep) <= guidance_interval[1]
             if guidance_scale > 1.0 and guidance_active:
-                model_input = torch.cat([latents, latents], dim=0)
+                model_input = torch.cat([packed_latents, packed_latents], dim=0)
                 labels = torch.cat([class_labels, null_labels], dim=0)
                 model_image_sizes = torch.cat([image_sizes, image_sizes], dim=0)
             else:
-                model_input = latents
+                model_input = packed_latents
                 labels = class_labels
                 model_image_sizes = image_sizes
 
-            timestep_batch = torch.full((labels.numel(),), float(timestep), device=device, dtype=dtype)
+            timestep_batch = torch.full((labels.numel(),), float(timestep), device=device, dtype=model_dtype)
             model_output = self.transformer(
-                model_input, timestep_batch, labels, image_sizes=model_image_sizes, return_dict=True
+                model_input.to(dtype=model_dtype), timestep_batch, labels, image_sizes=model_image_sizes, return_dict=True
             ).sample
             model_output = self._apply_classifier_free_guidance(model_output, guidance_scale, guidance_active)
 
             if heun and mode == "ode" and index < len(timesteps) - 2:
-                provisional = self.scheduler.step(model_output, timestep[None], latents, next_timestep[None]).prev_sample
+                provisional = self.scheduler.step(
+                    model_output,
+                    timestep[None],
+                    packed_latents,
+                    next_timestep[None],
+                    image_sizes=image_sizes,
+                ).prev_sample
                 if guidance_scale > 1.0 and guidance_active:
                     prime_input = torch.cat([provisional, provisional], dim=0)
                     labels = torch.cat([class_labels, null_labels], dim=0)
@@ -179,26 +192,31 @@ class NiTPipeline(DiffusionPipeline):
                     prime_input = provisional
                     labels = class_labels
                     model_image_sizes = image_sizes
-                next_timestep_batch = torch.full((labels.numel(),), float(next_timestep), device=device, dtype=dtype)
+                next_timestep_batch = torch.full((labels.numel(),), float(next_timestep), device=device, dtype=model_dtype)
                 next_model_output = self.transformer(
-                    prime_input, next_timestep_batch, labels, image_sizes=model_image_sizes, return_dict=True
+                    prime_input.to(dtype=model_dtype),
+                    next_timestep_batch,
+                    labels,
+                    image_sizes=model_image_sizes,
+                    return_dict=True,
                 ).sample
                 next_model_output = self._apply_classifier_free_guidance(
                     next_model_output, guidance_scale, guidance_active
                 )
-                latents = self.scheduler.step_heun(
-                    model_output, next_model_output, timestep[None], latents, next_timestep[None]
+                packed_latents = self.scheduler.step_heun(
+                    model_output, next_model_output, timestep[None], packed_latents, next_timestep[None]
                 ).prev_sample
             else:
-                latents = self.scheduler.step(
+                packed_latents = self.scheduler.step(
                     model_output,
                     timestep[None],
-                    latents,
+                    packed_latents,
                     next_timestep[None],
                     image_sizes=image_sizes,
                     generator=generator,
                 ).prev_sample
 
+        latents = self.transformer._unpack_latents(packed_latents, image_sizes)
         image = self._decode_latents(latents)
         if self.vae is not None:
             image = (image / 2 + 0.5).clamp(0, 1)
