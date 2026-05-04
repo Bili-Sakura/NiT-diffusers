@@ -117,6 +117,13 @@ class NiTFlowMatchScheduler(SchedulerMixin, ConfigMixin):
     def _compute_diffusion(timestep: torch.Tensor):
         return 2 * timestep
 
+    @staticmethod
+    def _promote_dtypes(*tensors: torch.Tensor) -> torch.dtype:
+        dtype = tensors[0].dtype
+        for tensor in tensors[1:]:
+            dtype = torch.promote_types(dtype, tensor.dtype)
+        return dtype
+
     def step(
         self,
         model_output: torch.Tensor,
@@ -129,9 +136,7 @@ class NiTFlowMatchScheduler(SchedulerMixin, ConfigMixin):
     ) -> NiTFlowMatchSchedulerOutput:
         del generator
         sample_dtype = sample.dtype
-        compute_dtype = torch.promote_types(sample.dtype, model_output.dtype)
-        compute_dtype = torch.promote_types(compute_dtype, timestep.dtype)
-        compute_dtype = torch.promote_types(compute_dtype, next_timestep.dtype)
+        compute_dtype = self._promote_dtypes(sample, model_output, timestep, next_timestep)
         sample = sample.to(dtype=compute_dtype)
         model_output = model_output.to(dtype=compute_dtype)
         timestep = timestep.to(device=sample.device, dtype=compute_dtype).flatten()
@@ -170,10 +175,7 @@ class NiTFlowMatchScheduler(SchedulerMixin, ConfigMixin):
         if self.mode != "ode":
             raise ValueError("Heun correction is only defined for ODE sampling.")
         sample_dtype = sample.dtype
-        compute_dtype = torch.promote_types(sample.dtype, model_output.dtype)
-        compute_dtype = torch.promote_types(compute_dtype, next_model_output.dtype)
-        compute_dtype = torch.promote_types(compute_dtype, timestep.dtype)
-        compute_dtype = torch.promote_types(compute_dtype, next_timestep.dtype)
+        compute_dtype = self._promote_dtypes(sample, model_output, next_model_output, timestep, next_timestep)
         sample = sample.to(dtype=compute_dtype)
         model_output = model_output.to(dtype=compute_dtype)
         next_model_output = next_model_output.to(dtype=compute_dtype)
