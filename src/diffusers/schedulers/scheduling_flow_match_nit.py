@@ -142,8 +142,11 @@ class NiTFlowMatchScheduler(SchedulerMixin, ConfigMixin):
             score = self._get_score_from_velocity(model_output, sample, timestep, image_sizes)
             drift = model_output - 0.5 * diffusion * score
             dt = next_timestep[0] - timestep[0]
-            noise = torch.randn_like(sample)
-            prev_sample = sample + drift * dt + torch.sqrt(diffusion) * noise * torch.sqrt(torch.abs(dt))
+            if torch.allclose(next_timestep[0], torch.zeros_like(next_timestep[0])):
+                prev_sample = sample + drift * dt
+            else:
+                noise = torch.randn_like(sample)
+                prev_sample = sample + drift * dt + torch.sqrt(diffusion) * noise * torch.sqrt(torch.abs(dt))
 
         prev_sample = prev_sample.to(sample_dtype)
         if not return_dict:

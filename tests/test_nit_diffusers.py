@@ -35,3 +35,21 @@ def test_scheduler_ode_step_matches_velocity_update():
     output = scheduler.step(velocity, torch.tensor([1.0]), sample, torch.tensor([0.75]))
 
     assert torch.allclose(output.prev_sample, torch.full_like(sample, 0.5))
+
+
+def test_scheduler_sde_final_step_is_deterministic():
+    scheduler = NiTFlowMatchScheduler(mode="sde")
+    sample = torch.randn(2, 4, 1, 1)
+    velocity = torch.zeros_like(sample)
+    image_sizes = torch.tensor([[1, 1], [1, 1]])
+
+    output = scheduler.step(
+        velocity,
+        torch.tensor([0.04]),
+        sample,
+        torch.tensor([0.0]),
+        image_sizes=image_sizes,
+        final_step=True,
+    )
+
+    assert output.prev_sample.shape == sample.shape
