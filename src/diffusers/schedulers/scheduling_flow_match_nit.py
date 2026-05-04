@@ -59,7 +59,8 @@ class NiTFlowMatchScheduler(SchedulerMixin, ConfigMixin):
         self.mode = mode
         self.path_type = path_type
         self.num_train_timesteps = num_train_timesteps
-        self.timesteps = torch.from_numpy(np.linspace(1.0, 0.0, num_train_timesteps + 1)).float()
+        default_dtype = torch.get_default_dtype()
+        self.timesteps = torch.from_numpy(np.linspace(1.0, 0.0, num_train_timesteps + 1)).to(dtype=default_dtype)
 
     def set_timesteps(
         self,
@@ -68,11 +69,12 @@ class NiTFlowMatchScheduler(SchedulerMixin, ConfigMixin):
         mode: Optional[str] = None,
     ):
         mode = mode or self.mode
+        dtype = self.timesteps.dtype
         if mode == "sde":
-            timesteps = torch.linspace(1.0, 0.04, num_inference_steps, dtype=torch.float32)
-            timesteps = torch.cat([timesteps, torch.zeros(1, dtype=torch.float32)])
+            timesteps = torch.linspace(1.0, 0.04, num_inference_steps, dtype=dtype)
+            timesteps = torch.cat([timesteps, torch.zeros(1, dtype=dtype)])
         elif mode == "ode":
-            timesteps = torch.linspace(1.0, 0.0, num_inference_steps + 1, dtype=torch.float32)
+            timesteps = torch.linspace(1.0, 0.0, num_inference_steps + 1, dtype=dtype)
         else:
             raise ValueError("mode must be either 'ode' or 'sde'.")
         self.mode = mode
@@ -115,6 +117,14 @@ class NiTFlowMatchScheduler(SchedulerMixin, ConfigMixin):
     def _compute_diffusion(timestep: torch.Tensor):
         return 2 * timestep
 
+    @staticmethod
+    def _promote_dtypes(*tensors: torch.Tensor) -> torch.dtype:
+        dtype = None
+        for tensor in tensors:
+            if tensor.is_floating_point() or tensor.is_complex():
+                dtype = tensor.dtype if dtype is None else torch.promote_types(dtype, tensor.dtype)
+        return dtype if dtype is not None else torch.get_default_dtype()
+
     def step(
         self,
         model_output: torch.Tensor,
@@ -127,10 +137,11 @@ class NiTFlowMatchScheduler(SchedulerMixin, ConfigMixin):
     ) -> NiTFlowMatchSchedulerOutput:
         del generator
         sample_dtype = sample.dtype
-        sample = sample.to(torch.float64)
-        model_output = model_output.to(torch.float64)
-        timestep = timestep.to(device=sample.device, dtype=torch.float64).flatten()
-        next_timestep = next_timestep.to(device=sample.device, dtype=torch.float64).flatten()
+        compute_dtype = self._promote_dtypes(sample, model_output, timestep, next_timestep)
+        sample = sample.to(dtype=compute_dtype)
+        model_output = model_output.to(dtype=compute_dtype)
+        timestep = timestep.to(device=sample.device, dtype=compute_dtype).flatten()
+        next_timestep = next_timestep.to(device=sample.device, dtype=compute_dtype).flatten()
 
         if self.mode == "ode":
             prev_sample = sample + (next_timestep[0] - timestep[0]) * model_output
@@ -165,11 +176,12 @@ class NiTFlowMatchScheduler(SchedulerMixin, ConfigMixin):
         if self.mode != "ode":
             raise ValueError("Heun correction is only defined for ODE sampling.")
         sample_dtype = sample.dtype
-        sample = sample.to(torch.float64)
-        model_output = model_output.to(torch.float64)
-        next_model_output = next_model_output.to(torch.float64)
-        timestep = timestep.to(device=sample.device, dtype=torch.float64).flatten()
-        next_timestep = next_timestep.to(device=sample.device, dtype=torch.float64).flatten()
+        compute_dtype = self._promote_dtypes(sample, model_output, next_model_output, timestep, next_timestep)
+        sample = sample.to(dtype=compute_dtype)
+        model_output = model_output.to(dtype=compute_dtype)
+        next_model_output = next_model_output.to(dtype=compute_dtype)
+        timestep = timestep.to(device=sample.device, dtype=compute_dtype).flatten()
+        next_timestep = next_timestep.to(device=sample.device, dtype=compute_dtype).flatten()
         prev_sample = sample + (next_timestep[0] - timestep[0]) * (0.5 * model_output + 0.5 * next_model_output)
         prev_sample = prev_sample.to(sample_dtype)
         if not return_dict:
