@@ -59,7 +59,8 @@ class NiTFlowMatchScheduler(SchedulerMixin, ConfigMixin):
         self.mode = mode
         self.path_type = path_type
         self.num_train_timesteps = num_train_timesteps
-        self.timesteps = torch.from_numpy(np.linspace(1.0, 0.0, num_train_timesteps + 1)).float()
+        default_dtype = torch.get_default_dtype()
+        self.timesteps = torch.from_numpy(np.linspace(1.0, 0.0, num_train_timesteps + 1)).to(dtype=default_dtype)
 
     def set_timesteps(
         self,
@@ -68,11 +69,12 @@ class NiTFlowMatchScheduler(SchedulerMixin, ConfigMixin):
         mode: Optional[str] = None,
     ):
         mode = mode or self.mode
+        dtype = self.timesteps.dtype
         if mode == "sde":
-            timesteps = torch.linspace(1.0, 0.04, num_inference_steps, dtype=torch.float32)
-            timesteps = torch.cat([timesteps, torch.zeros(1, dtype=torch.float32)])
+            timesteps = torch.linspace(1.0, 0.04, num_inference_steps, dtype=dtype)
+            timesteps = torch.cat([timesteps, torch.zeros(1, dtype=dtype)])
         elif mode == "ode":
-            timesteps = torch.linspace(1.0, 0.0, num_inference_steps + 1, dtype=torch.float32)
+            timesteps = torch.linspace(1.0, 0.0, num_inference_steps + 1, dtype=dtype)
         else:
             raise ValueError("mode must be either 'ode' or 'sde'.")
         self.mode = mode
@@ -127,10 +129,13 @@ class NiTFlowMatchScheduler(SchedulerMixin, ConfigMixin):
     ) -> NiTFlowMatchSchedulerOutput:
         del generator
         sample_dtype = sample.dtype
-        sample = sample.to(torch.float64)
-        model_output = model_output.to(torch.float64)
-        timestep = timestep.to(device=sample.device, dtype=torch.float64).flatten()
-        next_timestep = next_timestep.to(device=sample.device, dtype=torch.float64).flatten()
+        compute_dtype = torch.promote_types(sample.dtype, model_output.dtype)
+        compute_dtype = torch.promote_types(compute_dtype, timestep.dtype)
+        compute_dtype = torch.promote_types(compute_dtype, next_timestep.dtype)
+        sample = sample.to(dtype=compute_dtype)
+        model_output = model_output.to(dtype=compute_dtype)
+        timestep = timestep.to(device=sample.device, dtype=compute_dtype).flatten()
+        next_timestep = next_timestep.to(device=sample.device, dtype=compute_dtype).flatten()
 
         if self.mode == "ode":
             prev_sample = sample + (next_timestep[0] - timestep[0]) * model_output
@@ -165,11 +170,15 @@ class NiTFlowMatchScheduler(SchedulerMixin, ConfigMixin):
         if self.mode != "ode":
             raise ValueError("Heun correction is only defined for ODE sampling.")
         sample_dtype = sample.dtype
-        sample = sample.to(torch.float64)
-        model_output = model_output.to(torch.float64)
-        next_model_output = next_model_output.to(torch.float64)
-        timestep = timestep.to(device=sample.device, dtype=torch.float64).flatten()
-        next_timestep = next_timestep.to(device=sample.device, dtype=torch.float64).flatten()
+        compute_dtype = torch.promote_types(sample.dtype, model_output.dtype)
+        compute_dtype = torch.promote_types(compute_dtype, next_model_output.dtype)
+        compute_dtype = torch.promote_types(compute_dtype, timestep.dtype)
+        compute_dtype = torch.promote_types(compute_dtype, next_timestep.dtype)
+        sample = sample.to(dtype=compute_dtype)
+        model_output = model_output.to(dtype=compute_dtype)
+        next_model_output = next_model_output.to(dtype=compute_dtype)
+        timestep = timestep.to(device=sample.device, dtype=compute_dtype).flatten()
+        next_timestep = next_timestep.to(device=sample.device, dtype=compute_dtype).flatten()
         prev_sample = sample + (next_timestep[0] - timestep[0]) * (0.5 * model_output + 0.5 * next_model_output)
         prev_sample = prev_sample.to(sample_dtype)
         if not return_dict:

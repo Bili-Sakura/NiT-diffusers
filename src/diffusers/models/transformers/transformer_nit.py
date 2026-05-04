@@ -92,9 +92,10 @@ class NiTTimestepEmbedder(nn.Module):
     @staticmethod
     def get_timestep_embedding(timesteps: torch.Tensor, embedding_dim: int, max_period: int = 10000):
         half = embedding_dim // 2
-        exponent = -math.log(max_period) * torch.arange(half, dtype=torch.float32, device=timesteps.device) / half
+        embedding_dtype = timesteps.dtype if timesteps.is_floating_point() else torch.get_default_dtype()
+        exponent = -math.log(max_period) * torch.arange(half, dtype=embedding_dtype, device=timesteps.device) / half
         freqs = torch.exp(exponent)
-        args = timesteps[:, None].float() * freqs[None]
+        args = timesteps.to(dtype=embedding_dtype)[:, None] * freqs[None]
         embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
         if embedding_dim % 2:
             embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
@@ -139,7 +140,8 @@ class NiTRotaryEmbedding(nn.Module):
         dim = head_dim // 2
         if dim % 2 != 0:
             raise ValueError("NiT rotary embedding requires head_dim // 2 to be even.")
-        freqs = 1.0 / (theta ** (torch.arange(0, dim, 2).float() / dim))
+        default_dtype = torch.get_default_dtype()
+        freqs = 1.0 / (theta ** (torch.arange(0, dim, 2, dtype=default_dtype) / dim))
         self.register_buffer("freqs_h", freqs, persistent=False)
         self.register_buffer("freqs_w", freqs.clone(), persistent=False)
 
@@ -153,8 +155,9 @@ class NiTRotaryEmbedding(nn.Module):
             )
             grids.append(torch.stack([grid_h.flatten(), grid_w.flatten()], dim=0))
         grid = torch.cat(grids, dim=1)
-        freqs_h = torch.einsum("n,f->nf", grid[0].float(), self.freqs_h.to(device))
-        freqs_w = torch.einsum("n,f->nf", grid[1].float(), self.freqs_w.to(device))
+        freqs_dtype = self.freqs_h.dtype
+        freqs_h = torch.einsum("n,f->nf", grid[0].to(dtype=freqs_dtype), self.freqs_h.to(device))
+        freqs_w = torch.einsum("n,f->nf", grid[1].to(dtype=freqs_dtype), self.freqs_w.to(device))
         freqs = torch.cat([freqs_h.repeat_interleave(2, dim=-1), freqs_w.repeat_interleave(2, dim=-1)], dim=-1)
         return freqs.cos().unsqueeze(1), freqs.sin().unsqueeze(1)
 

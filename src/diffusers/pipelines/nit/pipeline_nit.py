@@ -103,6 +103,11 @@ class NiTPipeline(DiffusionPipeline):
     def _decode_latents(self, latents: torch.Tensor) -> torch.Tensor:
         if self.vae is None:
             return latents
+        try:
+            vae_dtype = next(self.vae.parameters()).dtype
+        except StopIteration:
+            vae_dtype = latents.dtype
+        latents = latents.to(dtype=vae_dtype)
         scaling_factor = getattr(self.vae.config, "scaling_factor", 1.0)
         latents = latents / scaling_factor
         if self.vae.__class__.__name__ == "AutoencoderDC":
@@ -190,7 +195,7 @@ class NiTPipeline(DiffusionPipeline):
                     generator=generator,
                 ).prev_sample
 
-        image = self._decode_latents(latents.float())
+        image = self._decode_latents(latents)
         if self.vae is not None:
             image = (image / 2 + 0.5).clamp(0, 1)
             image = self.image_processor.postprocess(image, output_type=output_type)
