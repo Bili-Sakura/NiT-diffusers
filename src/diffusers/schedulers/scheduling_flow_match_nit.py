@@ -119,10 +119,11 @@ class NiTFlowMatchScheduler(SchedulerMixin, ConfigMixin):
 
     @staticmethod
     def _promote_dtypes(*tensors: torch.Tensor) -> torch.dtype:
-        dtype = torch.get_default_dtype()
+        dtype = None
         for tensor in tensors:
-            dtype = torch.promote_types(dtype, tensor.dtype)
-        return dtype
+            if tensor.is_floating_point() or tensor.is_complex():
+                dtype = tensor.dtype if dtype is None else torch.promote_types(dtype, tensor.dtype)
+        return dtype if dtype is not None else torch.get_default_dtype()
 
     def step(
         self,

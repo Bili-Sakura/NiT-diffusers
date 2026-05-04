@@ -68,7 +68,7 @@ def _rotate_half(hidden_states: torch.Tensor) -> torch.Tensor:
     return torch.stack((-hidden_states_2, hidden_states_1), dim=-1).flatten(-2)
 
 
-def _get_default_dtype(tensor: Optional[torch.Tensor] = None) -> torch.dtype:
+def _resolve_dtype(tensor: Optional[torch.Tensor] = None) -> torch.dtype:
     if tensor is not None and tensor.is_floating_point():
         return tensor.dtype
     return torch.get_default_dtype()
@@ -98,7 +98,7 @@ class NiTTimestepEmbedder(nn.Module):
     @staticmethod
     def get_timestep_embedding(timesteps: torch.Tensor, embedding_dim: int, max_period: int = 10000):
         half = embedding_dim // 2
-        embedding_dtype = _get_default_dtype(timesteps)
+        embedding_dtype = _resolve_dtype(timesteps)
         exponent = -math.log(max_period) * torch.arange(half, dtype=embedding_dtype, device=timesteps.device) / half
         freqs = torch.exp(exponent)
         args = timesteps.to(dtype=embedding_dtype)[:, None] * freqs[None]
@@ -146,7 +146,7 @@ class NiTRotaryEmbedding(nn.Module):
         dim = head_dim // 2
         if dim % 2 != 0:
             raise ValueError("NiT rotary embedding requires head_dim // 2 to be even.")
-        default_dtype = _get_default_dtype()
+        default_dtype = _resolve_dtype()
         freqs = 1.0 / (theta ** (torch.arange(0, dim, 2, dtype=default_dtype) / dim))
         self.register_buffer("freqs_h", freqs, persistent=False)
         self.register_buffer("freqs_w", freqs.clone(), persistent=False)
